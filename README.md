@@ -13,7 +13,7 @@ In your code, initialize the class by calling `LCDScreen* lcd = new LCDScreen();
 To draw something on the screen, you need to fill a 1D buffer and send it using the function `DrawFrame(unsigned char* data, unsigned int size)`. The buffer varies with the `Interface Pixel Format`. By default, I put it in the 18-bits mode (18 / 3 = 6 bits by color : R - G - B) :
 
 <p align="center">
-  <img src="images/color_18bits" alt="18bits color" width="400"/>
+  <img src="images/18bits_colors.png" alt="18bits color" width="400"/>
   <br>
   <em>18bits Color</em>
 </p>
