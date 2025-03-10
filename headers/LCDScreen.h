@@ -1,27 +1,33 @@
 #pragma once
 
-#include <pigpio.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
 
+#include "driver/spi_master.h"
+
+
+/* ESP32-S3-WROOM-1 pins */
+
 // Define GPIO for LCD screen
-#define DCRS    26
-#define RESET   19
+#define LCD_DCRS    5
+#define LCD_RESET   4
+#define LCD_MISO 13
+#define LCD_MOSI 11
+#define LCD_CLK  12
+#define LCD_CS   10
 
 // Define GPIO for Touch Screen
-#define IRQ_TOUCH 5
+#define TOUCH_IRQ 6
+#define TOUCH_MISO LCD_MISO
+#define TOUCH_MOSI LCD_MOSI
+#define TOUCH_CLK  LCD_CLK
+#define TOUCH_CS   39
 
 // Spi Definition
 #define BAUDRATE_LCD    20000000 // 20 MHz
 #define BAUDRATE_TOUCH  50000 // 50KHz
-
-#define SPIFLAGS 0 // bits defined in pigpio's documentation
-
-// Channel 0 or 1
-#define SPICHAN_LCD     0
-#define SPICHAN_TOUCH   1
 
 // Pixels dimension
 #define WIDTH   480
@@ -97,7 +103,7 @@ enum TouchCommand{
 
 
 struct Touch{
-    int handle;
+    spi_device_handle_t spi;
     bool is_touched;
     enum Click type;
 };
@@ -106,7 +112,7 @@ struct Touch{
 // TODO: Revised the code to send video display without desynchronisation and artefacts
 // TODO: Accelerate the display for video and add more fps
 struct LCDScreen{
-    int handle;
+    spi_device_handle_t spi;
 
     char* draw_buffer;
     
@@ -115,65 +121,6 @@ struct LCDScreen{
     int EC; // End Column
     int EP; // End Page
 };
-
-
-// class LCDScreen
-// {
-//     private:
-//         // Handle that keep the spi communication
-//         int m_handle{};
-
-//         // Instance of the touchscreen
-//         Touch* m_touch{};
-
-//         // Position of each click
-//         Position m_touchPos{};
-
-//         // 320 height pixels * 18 bits/pixels * 480 width pixels
-//         unsigned char* m_drawBuffer;
-//         unsigned char* m_prevBuffer;
-
-
-//         int m_SC = 0; // Start column
-//         int m_SP = 0; // Start page
-//         int m_EC = 0; // End Column
-//         int m_EP = 0; // End Page
-        
-
-//     public:
-//         LCDScreen();
-//         ~LCDScreen();
-
-//         // The command, based on the datasheet is succeeded by its parameters we can send with WriteData
-//         // For more information, we can check the available commands of the datasheet ILI9488
-//         void WriteCommand(LCDCommand command);
-//         // Write a single data
-//         void WriteData(uint8_t data);
-//         // Write a bunch of data that we minimize with a chunck size
-//         void WriteData(char* data, unsigned int size);
-        
-//         // This function takes in parameter the position X and Y where we start, and the position X and Y where we finish.
-//         // If we send more data than the address we set, the data will be ignored
-//         void SetAddress(unsigned int x1, unsigned int y1, unsigned int x2, unsigned int y2);
-        
-//         // This function clear all the screen, and the components of our screen
-//         // Never used for the moment
-//         void ClearScreen();
-
-//         // This function is used to set only one pixel with a color
-//         void SetPixel(int x, int y, unsigned int color);
-
-//         // Used to draw a frame of the camera without the need to touch the SetAddress function and the WriteCommand - WriteData functionw
-//         void DrawFrame(unsigned char* data, unsigned int size);
-//         void DrawFrame();
-
-//         bool TouchScreen();
-
-//         const Position GetTouchCoord();
-
-//         void SetValueBuffer(unsigned char* val, unsigned int size);
-        
-// };
 
 
 void init_touchscreen(struct Touch* touch);
@@ -189,11 +136,9 @@ void init_lcd_screen(struct LCDScreen* lcd);
 void close_lcd_screen(struct LCDScreen* lcd);
 bool touch_screen(struct LCDScreen* lcd, struct Touch* touch, struct Position* screen_pos);
 void write_command(struct LCDScreen* lcd, enum LCDCommand command);
-void write_fixed_data(struct LCDScreen* lcd, uint8_t data);
-void write_data(struct LCDScreen* lcd, char* data, unsigned int size);
+void write_data(struct LCDScreen* lcd, char* data, int size);
 void set_address(struct LCDScreen* lcd, int x1, int y1, int x2, int y2);
 void clear_screen(struct LCDScreen* lcd);
 void set_pixel(struct LCDScreen* lcd, int x, int y, unsigned int color);
-void draw_fixed_frame(struct LCDScreen* lcd);
 void draw_frame(struct LCDScreen* lcd, unsigned int size);
 void set_value_buffer(struct LCDScreen* lcd, unsigned char* val, unsigned int size);

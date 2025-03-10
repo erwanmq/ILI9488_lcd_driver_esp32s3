@@ -1,45 +1,83 @@
 #include "LCDScreen.h"
 
+#include "driver/gpio.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+const char* TAG = "LCD Screen";
+const char* TAG_TOUCH = "Touch Screen";
 
 //////////////////////////////////////////////////////
 /////////////////// TOUCH METHOD /////////////////////
 //////////////////////////////////////////////////////
 
+void touch_spi_touched_interrupt()
+{
+    ESP_LOGI(TAG_TOUCH, "Interrupt trigerred");
+}
+
 void init_touchscreen(struct Touch* touch){
-    // Initialize gpio pins
-    if (gpioSetMode(IRQ_TOUCH, PI_INPUT) != 0){
-        //std::cerr << "Failed to set mode on one or more pins" << std::endl;
+    // Initialize non-spi gpio pins
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << TOUCH_IRQ),
+        .mode = GPIO_MODE_INPUT,
+        .intr_type = GPIO_INTR_NEGEDGE, // Falling edge. So it works only for click. Change it to "GPIO LOW" to use the permanent click (to scroll for example)
+    };
+    gpio_config(&io_conf);
+
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(TOUCH_IRQ, touch_spi_touched_interrupt, NULL);
+
+    // Initialize spi gpio pins
+    spi_device_handle_t spi;
+    spi_bus_config_t buscfg = {
+        .miso_io_num = TOUCH_MISO,
+        .mosi_io_num = TOUCH_MOSI,
+        .sclk_io_num = TOUCH_CLK,
+        .quadhd_io_num = -1,
+        .quadwp_io_num = -1,
+        .max_transfer_sz = 3,
+    };
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = BAUDRATE_TOUCH,
+        .mode = 0,
+        .spics_io_num = TOUCH_CS,
+        .queue_size = 1,
+        .pre_cb = NULL,
     }
+    ESP_ERROR_CHECK(spi_bus_initialize(0, &buscfg, SPI_DMA_DISABLED));
+    ESP_ERROR_CHECK(spi_bus_add_device(0, &devcfg, &spi));
+
     memset(touch, 0, sizeof(struct Touch));
-    touch->handle = spiOpen(SPICHAN_TOUCH, BAUDRATE_TOUCH, SPIFLAGS);
-    if(touch->handle < 0){
-        //std::cerr << "Failed to open SPI Port Touch Screen" << std::endl;
-    }
+
+    touch->spi = spi;
 }
 
 // MUST be called
 void close_touchscreen(struct Touch* touch){
-    spiClose(touch->handle);
+    gpio_isr_handler_remove(TOUCH_IRQ);
+    gpio_uninstall_isr_service();
+    spi_bus_remove_device(touch->spi);
 }
 
 bool is_touched(struct Touch* touch){
-    // Read the IRQ pin from the LCD touchscreen
-    // If LOW, the screen is touched
-    if(gpioRead(IRQ_TOUCH) == LOW){
-        if(!touch->is_touched){       // If it was not touch, before, it's press
-            touch->is_touched = true; // Used to touch one time
-            touch->type = ONE_CLICK; // A single click
-            return true;        // Return true for the caller
-        }
-    // If it's high and m_touched is true, it was a release
-    }else if(gpioRead(IRQ_TOUCH) == HIGH && touch->is_touched){
-        touch->is_touched = false;    // So touch is false
-        touch->type = RELEASE;       // And the type is RELEASE
+    // // Read the IRQ pin from the LCD touchscreen
+    // // If LOW, the screen is touched
+    // if(gpioRead(IRQ_TOUCH) == LOW){
+    //     if(!touch->is_touched){       // If it was not touch, before, it's press
+    //         touch->is_touched = true; // Used to touch one time
+    //         touch->type = ONE_CLICK; // A single click
+    //         return true;        // Return true for the caller
+    //     }
+    // // If it's high and m_touched is true, it was a release
+    // }else if(gpioRead(IRQ_TOUCH) == HIGH && touch->is_touched){
+    //     touch->is_touched = false;    // So touch is false
+    //     touch->type = RELEASE;       // And the type is RELEASE
         
-        return true;
-    }
-    return false;
+    //     return true;
+    // }
+    // return false;
 }
 
 
@@ -77,60 +115,90 @@ void map_to_screen(struct Position* raw, struct Position* screen) {
 /////////////////// LCD METHOD /////////////////////
 ////////////////////////////////////////////////////
 
+//This function is called (in irq context!) just before a transmission starts. It will
+//set the D/C line to the value indicated in the user field.
+void lcd_spi_pre_transfer_callback(spi_transaction_t *t)
+{
+    int dc = (int)t->user;
+    gpio_set_level(LCD_DCRS, dc);
+}
+
 void init_lcd_screen(struct LCDScreen* lcd)
 {
-    // Initialize gpio pins
-    if (gpioSetMode(RESET, PI_OUTPUT) != 0 ||
-        gpioSetMode(DCRS, PI_OUTPUT) != 0)
-    {
-        //std::cerr << "Failed to set mode on one or more pins" << std::endl;
-    }
-    memset(lcd, 0, sizeof(struct LCDScreen));
-    lcd->handle = spiOpen(SPICHAN_LCD, BAUDRATE_LCD, SPIFLAGS);
-    if(lcd->handle < 0)
-    {
-        //std::cerr << "Failed to open SPI Port LCD Screen" << std::endl;
-    }
+    // Initialize non-spi gpio pins
+    gpio_config_t io_conf = {
+        .pin_bit_mask = ((1ULL << LCD_DCRS) | (1ULL << LCD_RESET)),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
 
+    // Initialize spi gpio pins
+    spi_device_handle_t spi;
+    spi_bus_config_t buscfg = {
+        .miso_io_num = LCD_MISO,
+        .mosi_io_num = LCD_MOSI,
+        .sclk_io_num = LCD_CLK,
+        .quadhd_io_num = -1,
+        .quadwp_io_num = -1,
+        .max_transfer_sz = 3 * WIDTH * HEIGHT,
+    };
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = BAUDRATE_LCD,
+        .mode = 0,
+        .spics_io_num = LCD_CS,
+        .queue_size = 1,
+        .pre_cb = lcd_spi_pre_transfer_callback,
+    }
+    ESP_ERROR_CHECK(spi_bus_initialize(0, &buscfg, SPI_DMA_CH_AUTO));
+    ESP_ERROR_CHECK(spi_bus_add_device(0, &devcfg, &spi));
+
+    memset(lcd, 0, sizeof(struct LCDScreen));
+
+    lcd->spi = spi;
 
     // Initialisation Sequence
     //Reset the LCD Screen
-    gpioWrite(RESET, HIGH);
-    usleep(120 * 1000); // wait 120 ms
-    gpioWrite(RESET, LOW);
-    usleep(120 * 1000); // wait 120 ms
-    gpioWrite(RESET, HIGH);
-    usleep(120 * 1000); // wait 120 ms
+    gpio_set_level(LCD_RESET, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(120)); // wait 120 ms
+    gpio_set_level(LCD_RESET, LOW);
+    vTaskDelay(pdMS_TO_TICKS(120)); // wait 120 ms
+    gpio_set_level(LCD_RESET, HIGH);
+    vTaskDelay(pdMS_TO_TICKS(120)); // wait 120 ms
+
+
 
     // Software reset
     write_command(lcd, SOFTWARE_RST);
-    usleep(120 * 1000);
+    vTaskDelay(pdMS_TO_TICKS(120));
 
 
     // 0x3A Interface Pixel Format (bit depth color space)
     write_command(lcd, INTERFACE_PIXEL_FORMAT);
-    write_fixed_data(lcd, 0X66);
+    write_data(lcd, 0X66, 1);
 
     write_command(lcd, TEARING_EFFECT_LINE_ON);
-    write_fixed_data(lcd, 0x1);
+    write_data(lcd, 0x1, 1);
 
     write_command(lcd, MEMORY_ACCESS_CONTROL);
-    write_fixed_data(lcd, 0x20);
+    write_data(lcd, 0x20, 1);
 
     write_command(lcd, FRAME_RATE_CONTROL);
-    write_fixed_data(lcd, 0xA1);
-    write_fixed_data(lcd, 0x1F);
+    write_data(lcd, 0xA1, 1);
+    write_data(lcd, 0x1F, 1);
 
     write_command(lcd, ADJUST_CONTROL_3);
-    write_fixed_data(lcd, 0xA9);
-    write_fixed_data(lcd, 0x51);
-    write_fixed_data(lcd, 0x2C);
-    write_fixed_data(lcd, 0x02);
+    write_data(lcd, 0xA9, 1);
+    write_data(lcd, 0x51, 1);
+    write_data(lcd, 0x2C, 1);
+    write_data(lcd, 0x02, 1);
     
 
     // 0x11 Exit Sleep Mode. (Sleep OUT)
     write_command(lcd, SLEEP_OUT);
-    usleep(120*1000);
+    vTaskDelay(pdMS_TO_TICKS(120));
 
     // 0x29 Display ON.
     write_command(lcd, DISPLAY_ON);
@@ -171,44 +239,34 @@ bool touch_screen(struct LCDScreen* lcd, struct Touch* touch, struct Position* s
 
 void write_command(struct LCDScreen* lcd, enum LCDCommand command)
 {
-    gpioWrite(DCRS, LOW); // LOW means we send commands to the LCD
-    int success = spiWrite(lcd->handle, (char*)(&command), 1);
-    if (success < 0){
-        //std::cerr << "Error: " << success << " while sending command" << std::endl;
+    spi_device_acquire_bus(lcd->spi, portMAX_DELAY);
+
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));
+    t.length = 8;
+    t.tx_buffer = &command;
+    t.user = (void*)LOW; // DCRS should be to LOW
+
+    if(spi_device_polling_transmit(lcd->spi, &t) != ESP_OK){
+        ESP_LOGE(TAG, "Failed to send the command %d", command);
     }
 }
 
 
-void write_fixed_data(struct LCDScreen* lcd, uint8_t data)
-{
-    gpioWrite(DCRS, HIGH); // HIGH means we send data to the LCD
-    int success = spiWrite(lcd->handle, (char*)(&data), 1);
-    if (success < 0){
-        //std::cerr << "Error: " << success << " while sending data" << std::endl;
+void write_data(struct LCDScreen* lcd, char* data, int size){
+    spi_device_acquire_bus(lcd->spi, portMAX_DELAY);
+    spi_transaction_t t; 
+
+    if(size == 0){
+        return;
     }
-}
 
-
-void write_data(struct LCDScreen* lcd, char* data, unsigned int size){
-    gpioWrite(DCRS, HIGH);
-    const int chunkSize = 65536;  // Chunk size (adjust as necessary)
-    int totalSent = 0;
-    
-    // Loop through the data in chunks
-    while (totalSent < size) {
-        int remaining = (int)(size - totalSent);
-        int toSend = (remaining > chunkSize) ? chunkSize : remaining;
-
-        
-        int success = spiWrite(lcd->handle, data + totalSent, toSend);
-        
-
-        if (success < 0) {
-            //std::cerr << "Error: " << success << " while sending data" << std::endl;
-            break;  // Exit loop on error
-        }
-        
-        totalSent += toSend;
+    memset(&t, 0, sizeof(t));
+    t.length = size * 8; // in bits, not bytes
+    t.tx_buffer = data;
+    t.user = (void*)HIGH; // DCRS should be HIGH for data
+    if(spi_device_polling_transmit(lcd->spi, &t) != ESP_OK){
+        ESP_LOGE(TAG, "Failed to send the data of size %d", size);
     }
 }
 
@@ -216,10 +274,10 @@ void write_data(struct LCDScreen* lcd, char* data, unsigned int size){
 void set_address(struct LCDScreen* lcd, int x1, int y1, int x2, int y2)
 {
     write_command(lcd, COLUMN_ADDRESS_SET);
-	write_fixed_data(lcd, x1 >> 8);
-	write_fixed_data(lcd, x1);
-	write_fixed_data(lcd, x2 >> 8);
-	write_fixed_data(lcd, x2);
+	write_data(lcd, x1 >> 8, 1);
+	write_data(lcd, x1, 1);
+	write_data(lcd, x2 >> 8, 1);
+	write_data(lcd, x2, 1);
 
     lcd->SC = x1;
     lcd->EC = x2;
@@ -235,10 +293,10 @@ void set_address(struct LCDScreen* lcd, int x1, int y1, int x2, int y2)
         lcd->EC = WIDTH;
     
     write_command(lcd, PAGE_ADDRESS_SET);
-	write_fixed_data(lcd, y1 >> 8);
-	write_fixed_data(lcd, y1);
-	write_fixed_data(lcd, y2 >> 8);
-	write_fixed_data(lcd, y2);	 
+	write_data(lcd, y1 >> 8, 1);
+	write_data(lcd, y1, 1);
+	write_data(lcd, y2 >> 8, 1);
+	write_data(lcd, y2, 1);	 
 
     lcd->SP = y1;
     lcd->EP = y2;
@@ -267,9 +325,9 @@ void clear_screen(struct LCDScreen* lcd)
     {
         for(int m = 0; m < HEIGHT; m++)
         {
-            write_fixed_data(lcd, (white >> 16) & 0xFC);
-            write_fixed_data(lcd, (white >> 8) & 0xFC);
-            write_fixed_data(lcd, white & 0xFC);
+            write_data(lcd, (white >> 16) & 0xFC, 1);
+            write_data(lcd, (white >> 8) & 0xFC, 1);
+            write_data(lcd, white & 0xFC, 1);
         }
     }
 }
@@ -291,14 +349,6 @@ void set_pixel(struct LCDScreen* lcd, int x, int y, unsigned int color) {
     // write_data(lcd, red << 2);
     // write_data(lcd, green << 2);
     // write_data(lcd, blue << 2);
-}
-
-void draw_fixed_frame(struct LCDScreen* lcd){
-    
-    set_address(lcd, 0, 0, WIDTH, HEIGHT);
-    write_command(lcd, MEMORY_WRITE);
-
-    write_data(lcd,  lcd->draw_buffer, 3 * (WIDTH) * (HEIGHT));
 }
 
 void draw_frame(struct LCDScreen* lcd, unsigned int size){
