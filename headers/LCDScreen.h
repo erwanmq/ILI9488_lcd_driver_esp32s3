@@ -34,10 +34,14 @@
 #define HEIGHT  320
 
 // Min and Max (experimental) values of the edges of the touch screen (to test and to change based on yours)
-#define MAX_TOUCH_X 3940
-#define MAX_TOUCH_Y 3890
-#define MIN_TOUCH_X 240
-#define MIN_TOUCH_Y 200
+#define MAX_TOUCH_X 3824
+#define MAX_TOUCH_Y 3815
+#define MIN_TOUCH_X 284
+#define MIN_TOUCH_Y 208
+
+
+#define SPI_MAX_CHUNK_SIZE  4096
+#define BUFFER_MAX_SIZE     3 * WIDTH / 2 * HEIGHT / 2 * sizeof(char)
 
 // Command at the section 5 of the datasheet (http://www.lcdwiki.com/res/MSP3520/ILI9488%20Data%20Sheet.pdf)
 enum LCDCommand{
@@ -121,6 +125,9 @@ struct LCDScreen{
     int EC; // End Column
     int EP; // End Page
 };
+
+void open_spi();
+void close_spi();
 
 
 void init_touchscreen(struct Touch* touch);

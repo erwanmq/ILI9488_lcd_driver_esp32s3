@@ -16,9 +16,9 @@ void open_spi(){
         .sclk_io_num = LCD_CLK,                                                                                                 
         .quadhd_io_num = -1,                                                                                                    
         .quadwp_io_num = -1,                                                                                                    
-        .max_transfer_sz = 3 * WIDTH * HEIGHT,                                                                              
+        .max_transfer_sz = SPI_MAX_CHUNK_SIZE,                                                                              
     };                                                                                                                                                                                                                                              
-    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_DISABLED));                                          
+    ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));                                          
 }                                                                                                                                                                                                                                               
 
 void close_spi(){                                                                                                           
@@ -34,7 +34,7 @@ void touch_spi_touched_interrupt(void* args)
     } else { // Rising edge                                                                                                     
         touch->is_touched = false;                                                                                          
     }                                                                                                                                                                                                                                               
-    ESP_LOGI(TAG_TOUCH, "Interrupt trigerred");                                                                         
+    //ESP_LOGI(TAG_TOUCH, "Interrupt trigerred");                                                                         
 }                                                                                                                                                                                                                                               
 
 void init_touchscreen(struct Touch* touch){                                                                                 
@@ -97,20 +97,14 @@ uint16_t read_data(struct Touch* touch, enum TouchCommand command){
     t.length = 3 * 8;                                                                                                       
     t.tx_buffer = txBuffer;                                                                                                 
     t.rxlength = 3 * 8;      
+    t.rx_buffer = rxBuffer;
 
     spi_device_acquire_bus(touch->spi, portMAX_DELAY);                                                                                                                                                                                              
     spi_device_polling_transmit(touch->spi, &t);                                                                                                                                                                                                    
     spi_device_release_bus(touch->spi);          
 
-    char* received_buf = (char*)t.rx_buffer;                                                                                
-    if(received_buf != NULL){                                                                                                   
-        // The data to decode are in 12 bits size. We store them in a 16 bits variable                                          
-        uint16_t result = (uint16_t)(((*(received_buf + 1) << 8) | *(received_buf + 2)) >> 3);                                  
-    return result;
-    }else {                                                                                                                     
-        ESP_LOGE(TAG_TOUCH, "No data received from the Touch Screen");                                                      
-    }                                                                                                                                                                                                                                               
-    return 0;                                                                                                           
+    uint16_t result = (uint16_t)(((rxBuffer[1] << 8) | rxBuffer[2]) >> 3);                                  
+    return result;                                                                                                         
 }    
 
 uint16_t read_x_coord(struct Touch* touch) {                                                                                
@@ -214,7 +208,7 @@ void init_lcd_screen(struct LCDScreen* lcd)
     write_command(lcd, DISPLAY_ON);                                                                                                                                                                                                                 
     ESP_LOGI(TAG, "Allocate memory");    
 
-    lcd->draw_buffer = (char*)malloc(3 * (WIDTH) * (HEIGHT) * sizeof(char));                                            
+    lcd->draw_buffer = (char*)heap_caps_malloc(BUFFER_MAX_SIZE, MALLOC_CAP_DMA);                                         
 }       
 
 // MUST be called at the end of use                                                                                     
@@ -247,7 +241,7 @@ bool touch_screen(struct LCDScreen* lcd, struct Touch* touch, struct Position* s
 }      
 
 void write_command(struct LCDScreen* lcd, enum LCDCommand command) {                                                                                                                           
-    spi_device_acquire_bus(lcd->spi, portMAX_DELAY);     
+    //spi_device_acquire_bus(lcd->spi, portMAX_DELAY);     
 
     spi_transaction_t t;                                                                                                    
     memset(&t, 0, sizeof(t));       
@@ -260,28 +254,41 @@ void write_command(struct LCDScreen* lcd, enum LCDCommand command) {
         ESP_LOGE(TAG, "Failed to send the command %d", command);                                                            
     }                                
 
-    spi_device_release_bus(lcd->spi);                                                                                   
+    //spi_device_release_bus(lcd->spi);                                                                                   
 }        
 
-void write_data(struct LCDScreen* lcd, uint8_t* data, int size){                                                            
-    spi_device_acquire_bus(lcd->spi, portMAX_DELAY);  
+void write_data(struct LCDScreen* lcd, uint8_t* data, int size){         
+    size_t bytes_sent = 0;
 
-    spi_transaction_t t;                                                                                                                                                                                                                            
     if(size == 0){                                                                                                              
         return;                                                                                                             
     }        
 
-    memset(&t, 0, sizeof(t));           
-                                                                                       
-    t.length = size * 8; // in bits, not bytes                                                                              
-    t.tx_buffer = data;                                                                                                     
-    t.user = (void*)HIGH; // DCRS should be HIGH for data       
+    //spi_device_acquire_bus(lcd->spi, portMAX_DELAY);  
 
-    if(spi_device_polling_transmit(lcd->spi, &t) != ESP_OK){                                                                    
-        ESP_LOGE(TAG, "Failed to send the data of size %d", size);                                                          
-    }                                         
+    while(bytes_sent < size) {
+        size_t chunk_size = size - bytes_sent;
+        if(chunk_size > SPI_MAX_CHUNK_SIZE) {
+            chunk_size = SPI_MAX_CHUNK_SIZE;
+        }
+    
 
-    spi_device_release_bus(lcd->spi);                                                                                   
+        spi_transaction_t t;                                                                                                                                                                                                                            
+
+
+        memset(&t, 0, sizeof(t));           
+                                                                                        
+        t.length = chunk_size * 8; // in bits, not bytes                                                                              
+        t.tx_buffer = data + bytes_sent;                                                                                                     
+        t.user = (void*)HIGH; // DCRS should be HIGH for data       
+
+        if(spi_device_polling_transmit(lcd->spi, &t) != ESP_OK){                                                                    
+            ESP_LOGE(TAG, "Failed to send the data of size %d", size);                                                          
+        }    
+        bytes_sent += chunk_size;                                     
+    }
+
+    //spi_device_release_bus(lcd->spi);                                                                                   
 }             
 
 void write_single_data(struct LCDScreen* lcd, uint8_t data){                                                                
