@@ -25,6 +25,8 @@
 #define TOUCH_CLK  LCD_CLK
 #define TOUCH_CS   39
 
+#define TOUCH_DEBOUNCE_US       1000    // 1ms 
+
 // Spi Definition
 #define BAUDRATE_LCD    20000000 // 20 MHz
 #define BAUDRATE_TOUCH  50000 // 50KHz
@@ -34,10 +36,10 @@
 #define HEIGHT  320
 
 // Min and Max (experimental) values of the edges of the touch screen (to test and to change based on yours)
-#define MAX_TOUCH_X 3824
-#define MAX_TOUCH_Y 3815
-#define MIN_TOUCH_X 284
-#define MIN_TOUCH_Y 208
+#define MAX_TOUCH_X 3960
+#define MAX_TOUCH_Y 3840
+#define MIN_TOUCH_X 270
+#define MIN_TOUCH_Y 340
 
 
 #define SPI_MAX_CHUNK_SIZE  4096
@@ -108,8 +110,9 @@ enum TouchCommand{
 
 struct Touch{
     spi_device_handle_t spi;
-    bool is_touched;
+    volatile bool is_touched;
     enum Click type;
+    volatile int64_t last_irq_time_us;  // for debounce
 };
 
 // LCD Screen ILI9488 in 4-wire SPI mode

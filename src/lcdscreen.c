@@ -4,6 +4,8 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 
+#include "esp_timer.h"
+
 const char* TAG = "LCD Screen";
 const char* TAG_TOUCH = "Touch Screen";
 //////////////////////////////////////////////////////                                                                  
@@ -22,43 +24,44 @@ void open_spi(){
 }                                                                                                                                                                                                                                               
 
 void close_spi(){                                                                                                           
-    ESP_ERROR_CHECK(spi_bus_free(1));
+    ESP_ERROR_CHECK(spi_bus_free(SPI2_HOST));
 }  
 
-void touch_spi_touched_interrupt(void* args)                                                                            
+void IRAM_ATTR touch_spi_touched_interrupt(void* args)                                                                            
 {                                                                                                                           
-    struct Touch* touch = (struct Touch*)args;                                                                                                                                                                                                      
-    // Falling edge                                                                                                         
-    if(!touch->is_touched){                                                                                                     
-        touch->is_touched = true;                                                                                           
-    } else { // Rising edge                                                                                                     
-        touch->is_touched = false;                                                                                          
-    }                                                                                                                                                                                                                                               
-    //ESP_LOGI(TAG_TOUCH, "Interrupt trigerred");                                                                         
-}                                                                                                                                                                                                                                               
+    struct Touch* touch = (struct Touch*)args;
 
-void init_touchscreen(struct Touch* touch){                                                                                 
+    int64_t now = esp_timer_get_time();
+
+    if (now - touch->last_irq_time_us > TOUCH_DEBOUNCE_US) {
+        touch->last_irq_time_us = now;
+        touch->is_touched = (gpio_get_level(TOUCH_IRQ) == 0); // touched == low
+    }
+}
+
+void init_touchscreen(struct Touch* touch){    
+    memset(touch, 0, sizeof(struct Touch));                                                                             
     // Initialize non-spi gpio pins                                                                                         
     gpio_config_t io_conf = {                                                                                                   
         .pin_bit_mask = (1ULL << TOUCH_IRQ),                                                                                    
-        .mode = GPIO_MODE_INPUT,                                                                                                
+        .mode = GPIO_MODE_INPUT,      
+        .pull_up_en = true,                                                                                        
         .intr_type = GPIO_INTR_ANYEDGE, // both edges. So it works for click and release. Change it to "GPIO LOW" to use the permanent click (to scroll for example)                                                                                
     };                                                                                                                      
     ESP_ERROR_CHECK(gpio_config(&io_conf));                                                                                                                                                                                                         
     ESP_ERROR_CHECK(gpio_install_isr_service(0));                                                                                                                                                                                                   
     ESP_ERROR_CHECK(gpio_isr_handler_add(TOUCH_IRQ, touch_spi_touched_interrupt, touch));                                                                                                                                                           
-    // Initialize spi gpio pins                                                                                             
-    spi_device_handle_t spi;                                                                                                
-    spi_device_interface_config_t devcfg = {                                                                                    
-        .clock_speed_hz = BAUDRATE_TOUCH,                                                                                       
-        .mode = 0,                                                                                                              
-        .spics_io_num = TOUCH_CS,                                                                                               
-        .queue_size = 1,                                                                                                        
-        .pre_cb = NULL,                                                                                                     
-    };                                                                                                                      
-    ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &devcfg, &spi));                                                                                                                                                                                  
-    memset(touch, 0, sizeof(struct Touch));                                                                                                                                                                                                         
-    touch->spi = spi;                                                                                                   
+    // Initialize spi gpio pins
+    spi_device_handle_t spi;
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = BAUDRATE_TOUCH,
+        .mode = 0,
+        .spics_io_num = TOUCH_CS,
+        .queue_size = 1,
+        .pre_cb = NULL,
+    };
+    ESP_ERROR_CHECK(spi_bus_add_device(SPI2_HOST, &devcfg, &spi)); 
+    touch->spi = spi;
 }  
 
 // MUST be called                                                                                                       
@@ -67,25 +70,7 @@ void close_touchscreen(struct Touch* touch){
     gpio_uninstall_isr_service();                                                                                           
     ESP_ERROR_CHECK(spi_bus_remove_device(touch->spi));                                                                 
 }    
-
-bool is_touched(struct Touch* touch){                                                                                       
-// // Read the IRQ pin from the LCD touchscreen                                                                         
-// // If LOW, the screen is touched                                                                                     
-// if(gpioRead(IRQ_TOUCH) == LOW){                                                                                      
-//     if(!touch->is_touched){       // If it was not touch, before, it's press                                         
-//         touch->is_touched = true; // Used to touch one time                                                          
-//         touch->type = ONE_CLICK; // A single click                                                                   
-//         return true;        // Return true for the caller                                                            
-//     }                                                                                                                
-// // If it's high and m_touched is true, it was a release                                                              
-// }else if(gpioRead(IRQ_TOUCH) == HIGH && touch->is_touched){                                                          
-//     touch->is_touched = false;    // So touch is false                                                               
-//     touch->type = RELEASE;       // And the type is RELEASE                                                                                                                                                                                  
-//     return true;                                                                                                     
-// }                                                                                                                    
-// return false;                                                                                                        
-return false;                                                                                                       
-}                                                                                                                                                                                                                                                                                                                                                                       
+                                                                                                                                                                                                                                                                                                                                                               
 
 uint16_t read_data(struct Touch* touch, enum TouchCommand command){
     char txBuffer[3] = { command, 0, 0 };                                                                                   
@@ -103,7 +88,10 @@ uint16_t read_data(struct Touch* touch, enum TouchCommand command){
     spi_device_polling_transmit(touch->spi, &t);                                                                                                                                                                                                    
     spi_device_release_bus(touch->spi);          
 
-    uint16_t result = (uint16_t)(((rxBuffer[1] << 8) | rxBuffer[2]) >> 3);                                  
+    uint16_t result = (uint16_t)(((rxBuffer[1] << 8) | rxBuffer[2]) >> 3);  
+    if(result == 4095) { // dummy values (12 bits of 1)
+        result = 0;
+    }                                
     return result;                                                                                                         
 }    
 
@@ -264,7 +252,7 @@ void write_data(struct LCDScreen* lcd, uint8_t* data, int size){
         return;                                                                                                             
     }        
 
-    //spi_device_acquire_bus(lcd->spi, portMAX_DELAY);  
+    spi_device_acquire_bus(lcd->spi, portMAX_DELAY);  
 
     while(bytes_sent < size) {
         size_t chunk_size = size - bytes_sent;
@@ -288,7 +276,7 @@ void write_data(struct LCDScreen* lcd, uint8_t* data, int size){
         bytes_sent += chunk_size;                                     
     }
 
-    //spi_device_release_bus(lcd->spi);                                                                                   
+    spi_device_release_bus(lcd->spi);                                                                                   
 }             
 
 void write_single_data(struct LCDScreen* lcd, uint8_t data){                                                                
